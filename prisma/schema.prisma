@@ -1,0 +1,67 @@
+generator client {
+  provider   = "prisma-client-js"
+  output     = "../generated/prisma"
+  engineType = "binary"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ================= AUTH SERVICE MODELS =================
+model User {
+  user_id  String @id @default(uuid()) @db.VarChar(36)
+  username String @db.VarChar(255)
+  email    String @unique @db.VarChar(255)
+  country  String @db.VarChar(255)
+  password String @db.VarChar(255)
+  role     String @db.VarChar(255)
+
+  @@map("users")
+}
+
+// ================= GAME SERVICE MODELS =================
+model Game {
+  game_id     String        @id @default(uuid()) @db.VarChar(36)
+  game_name   String        @db.VarChar(255)
+  description String        @db.VarChar(255)
+  categories  RunCategory[]
+
+  @@map("games")
+}
+
+model RunCategory {
+  run_category_id   String @id @default(uuid()) @db.VarChar(36)
+  game_id           String @db.VarChar(36)
+  run_category_name String @db.VarChar(255)
+  game              Game   @relation(fields: [game_id], references: [game_id], onDelete: Cascade)
+
+  @@map("run_categories")
+}
+
+// ================= RUN SERVICE MODELS =================
+model Run {
+  run_id          String    @id @default(uuid()) @db.VarChar(36)
+  run_category_id String    @db.VarChar(36)
+  user_id         String    @db.VarChar(36)
+  vod_url         String    @db.VarChar(255)
+  run_duration    BigInt    
+  submitted_at    DateTime  @default(now())
+  verified_at     DateTime?
+  status          String    @db.VarChar(25) 
+  comments        Comment[]
+
+  @@map("runs")
+}
+
+model Comment {
+  comment_id String   @id @default(uuid()) @db.VarChar(36)
+  run_id     String   @db.VarChar(36)
+  user_id    String   @db.VarChar(36)
+  comment    String   @db.VarChar(255)
+  created_at DateTime @default(now())
+  run        Run      @relation(fields: [run_id], references: [run_id], onDelete: Cascade)
+
+  @@map("comments")
+}
