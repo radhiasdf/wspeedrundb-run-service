@@ -1,108 +1,88 @@
-import { Controller, Get, Post, Delete, Body, Param, UseGuards, Req, ForbiddenException, BadRequestException } from '@nestjs/common';
-import { PrismaService } from './prisma.service';
-import { UserGuard } from './guards/user.guard'; // Decodes standard token authentication payloads
+import { Controller, Get, Post, Delete, Body, Param, UseGuards, Req } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiBearerAuth, ApiParam } from '@nestjs/swagger';
+import { AppService } from './app.service';
+import { UserGuard } from './guards/user.guard';
 import { AdminGuard } from './guards/admin.guard';
-import axios from 'axios';
-import { formatDuration } from './utils/duration-formatter.util';
+import * as jwt from 'jsonwebtoken';
 
+@ApiTags('Run Service')
 @Controller()
 export class RunController {
-  constructor(private prisma: PrismaService) {}
+  constructor(private readonly appService: AppService) {}
 
   @Get('runs/:id/category')
+  @ApiOperation({ summary: 'List of all accepted runs by run category' })
   async getRunsByCategory(@Param('id') categoryId: string) {
-    const runs = await this.prisma.run.findMany({
-      where: { run_category_id: categoryId, status: 'ACCEPTED' },
-      orderBy: { run_duration: 'asc' }
-    });
+    return this.appService.getRunsByCategory(categoryId);
+  }
 
-    // Hydrate runtime objects across distinct backend network services via Axios
-    const formattedRuns = await Promise.all(runs.map(async (run) => {
-      let runnerInfo = null;
+  @Get('runs/:id/user')
+  @ApiOperation({ summary: 'List of all runs submitted by a specific user' })
+  async getRunsByUser(@Param('id') targetUserId: string, @Req() req: any) {
+    const authHeader = req.headers.authorization;
+    let authenticatedUserId: string | null = null;
+
+    if (authHeader) {
       try {
-        const userRes = await axios.get(`http://localhost:3000/users/${run.user_id}/profile`);
-        runnerInfo = userRes.data;
-      } catch (e) {}
+        const token = authHeader.split(' ')[1];
+        const decoded = jwt.verify(token, 'SUPER_SECRET_KEY_123') as { id: string };
+        authenticatedUserId = decoded.id;
+      } catch (err) {}
+    }
+    return this.appService.getRunsByUser(targetUserId, authenticatedUserId);
+  }
 
-      return {
-        run_id: run.run_id,
-        vod_url: run.vod_url,
-        status: run.status,
-        duration_formatted: `${Math.floor(Number(run.run_duration) / 3600)} Hour(s) ${Math.floor((Number(run.run_duration) % 3600) / 60)} Minute(s) ${Number(run.run_duration) % 60} Second(s)`,
-        runner: runnerInfo
-      };
-    }));
-
-    return formattedRuns;
+  @Get('runs/:id')
+  @ApiOperation({ summary: 'Get detailed information for a specific entry' })
+  async getRunDetails(@Param('id') runId: string) {
+    return this.appService.getRunDetails(runId);
   }
 
   @Post('runs')
   @UseGuards(UserGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Submit a new pending speedrun entry' })
   async submitRun(@Req() req: any, @Body() body: { category_id: string; vod_url: string; duration: number }) {
-    if (!body.category_id || !body.vod_url || !body.duration) {
-      throw new BadRequestException('Run category id, vod url, and duration duration must be filled.');
-    }
-
-    // Verify category exists via Game Service
-    try {
-      await axios.get(`http://localhost:3001/categories/${body.category_id}`);
-    } catch (err) {
-      throw new BadRequestException('Target Run category ID does not exist.');
-    }
-
-    await this.prisma.run.create({
-      data: {
-        run_category_id: body.category_id,
-        user_id: req.user.id,
-        vod_url: body.vod_url,
-        run_duration: BigInt(body.duration),
-        status: 'PENDING'
-      }
-    });
-
-    return { message: 'Speedrun entry successfully submitted.' };
+    return this.appService.submitRun(req.user.id, body);
   }
-
-  // --- Dynamic Social Comments Processing Modules ---
 
   @Post('comments')
   @UseGuards(UserGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Post a comment on an active run' })
   async postComment(@Req() req: any, @Body() body: { run_id: string; user_id: string; comment: string }) {
-    if (body.user_id !== req.user.id) throw new ForbiddenException('User signature mismatch.');
-
-    const run = await this.prisma.run.findUnique({ where: { run_id: body.run_id } });
-    if (!run) throw new BadRequestException('Run target element could not be found.');
-
-    await this.prisma.comment.create({
-      data: {
-        run_id: body.run_id,
-        user_id: body.user_id,
-        comment: body.comment
-      }
-    });
-    return { message: 'Comment created successfully.' };
+    return this.appService.postComment(req.user.id, body);
   }
 
   @Delete('comments/:id')
   @UseGuards(UserGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Delete your own comment' })
   async deleteComment(@Req() req: any, @Param('id') commentId: string) {
-    const comment = await this.prisma.comment.findUnique({ where: { comment_id: commentId } });
-    if (!comment) throw new BadRequestException('Comment does not exist.');
-    if (comment.user_id !== req.user.id) throw new ForbiddenException('You are not the comment owner.');
-
-    await this.prisma.comment.delete({ where: { comment_id: commentId } });
-    return { message: 'Comment deleted successfully.' };
+    return this.appService.deleteComment(req.user.id, commentId);
   }
 
-  // --- Management Administrative Enforcements ---
+  @Get('admin/runs/:status')
+  @UseGuards(AdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get all submissions filtered by status' })
+  async getRunsByStatus(@Param('status') status: string) {
+    return this.appService.getRunsByStatus(status);
+  }
 
   @Post('admin/runs/:id/accept')
   @UseGuards(AdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Approve a submitted run entry' })
   async acceptRun(@Param('id') id: string) {
-    await this.prisma.run.update({
-      where: { run_id: id },
-      data: { status: 'ACCEPTED', verified_at: new Date() }
-    });
-    return { message: 'Run entry status updated to ACCEPTED.' };
+    return this.appService.updateRunStatus(id, 'ACCEPTED');
+  }
+
+  @Post('admin/runs/:id/reject')
+  @UseGuards(AdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Reject a submitted run entry' })
+  async rejectRun(@Param('id') id: string) {
+    return this.appService.updateRunStatus(id, 'REJECTED');
   }
 }
